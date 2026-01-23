@@ -7,6 +7,8 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <stdio.h>
+#include <cstdint>
+#include <fstream>
 
 #include <any>
 #include <map>
@@ -41,6 +43,63 @@
 
 std::stack<std::string> currentDir;
 
+#if defined(__linux__)
+namespace {
+struct ReadableRange {
+    uintptr_t Start = 0;
+    uintptr_t End = 0;
+};
+
+std::vector<ReadableRange> ParseReadableMaps() {
+    std::vector<ReadableRange> ranges;
+    std::ifstream maps("/proc/self/maps");
+    std::string line;
+    while (std::getline(maps, line)) {
+        uintptr_t start = 0;
+        uintptr_t end = 0;
+        char perms[5] = {};
+        if (sscanf(line.c_str(), "%lx-%lx %4s", &start, &end, perms) == 3) {
+            if (perms[0] == 'r' && start < end) {
+                ranges.push_back({ start, end });
+            }
+        }
+    }
+    return ranges;
+}
+
+bool IsReadableRange(const void* ptr, size_t len) {
+    if (ptr == nullptr) {
+        return false;
+    }
+    if (len == 0) {
+        return true;
+    }
+
+    const uintptr_t start = reinterpret_cast<uintptr_t>(ptr);
+    const uintptr_t end = start + len - 1;
+    if (end < start) {
+        return false;
+    }
+
+    static std::vector<ReadableRange> sReadableRanges = ParseReadableMaps();
+    auto inRange = [&](const std::vector<ReadableRange>& ranges) {
+        for (const auto& range : ranges) {
+            if (start >= range.Start && end <= range.End) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    if (inRange(sReadableRanges)) {
+        return true;
+    }
+
+    sReadableRanges = ParseReadableMaps();
+    return inRange(sReadableRanges);
+}
+} // namespace
+#endif
 #define SEG_ADDR(seg, addr) (addr | (seg << 24) | 1)
 #define SUPPORT_CHECK(x) assert(x)
 
@@ -3334,11 +3393,21 @@ bool gfx_othermode_h_handler_f3d(F3DGfx** cmd0) {
 bool gfx_set_timg_handler_rdp(F3DGfx** cmd0) {
     Interpreter* gfx = mInstance.lock().get();
     F3DGfx* cmd = *cmd0;
-    uintptr_t i = (uintptr_t)gfx->SegAddr(cmd->words.w1);
+    uintptr_t rawAddr = (uintptr_t)cmd->words.w1;
+    uintptr_t i = (uintptr_t)gfx->SegAddr(rawAddr);
 
     char* imgData = (char*)i;
     uint32_t texFlags = 0;
     RawTexMetadata rawTexMetdata = {};
+
+#if defined(__linux__)
+    if (((reinterpret_cast<uintptr_t>(imgData) >> 32) != 0) && (rawAddr & 1) == 0 &&
+        !IsReadableRange(imgData, 1)) {
+        uintptr_t masked = (uintptr_t)(uint32_t)rawAddr;
+        i = (uintptr_t)gfx->SegAddr(masked);
+        imgData = (char*)i;
+    }
+#endif
 
     if ((i & 1) != 1) {
         if (gfx_check_image_signature(imgData) == 1) {
