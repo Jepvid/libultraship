@@ -155,10 +155,14 @@ target_include_directories(monocypher PUBLIC
 #=========== libtcc ===========
 if(ENABLE_SCRIPTING)
 
+set(tinycc_nostartfiles_patch_file ${CMAKE_CURRENT_SOURCE_DIR}/cmake/dependencies/patches/tcc-nostartfiles.patch)
+set(tinycc_apply_patch_command ${CMAKE_COMMAND} -Dpatch_file=${tinycc_nostartfiles_patch_file} -Dwith_reset=TRUE -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/dependencies/git-patch.cmake)
+
 FetchContent_Declare(
     tinycc
     GIT_REPOSITORY https://github.com/TinyCC/tinycc.git
     GIT_TAG        mob
+    PATCH_COMMAND  ${tinycc_apply_patch_command}
 )
 
 FetchContent_MakeAvailable(tinycc)

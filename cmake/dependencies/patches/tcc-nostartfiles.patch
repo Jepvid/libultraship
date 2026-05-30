@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ghostship <ghostship@example.com>
+Date: Fri, 30 May 2026 00:00:00 +0000
+Subject: [PATCH] Add -nostartfiles flag to avoid crti.o requirement on AppImage
+
+Adds a separate nostartfiles flag to TCCState that skips linking crt
+begin/end objects (crti.o, crtn.o) without affecting libc or libtcc1.
+This fixes TCC mod compilation on Linux AppImage builds where crti.o
+is not accessible, while keeping libc and TCC runtime helpers intact.
+---
+ libtcc.c | 10 ++++++++++
+ tcc.h    |  1 +
+ tccelf.c |  2 +-
+ 3 files changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/libtcc.c b/libtcc.c
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -1004,7 +1004,7 @@ LIBTCCAPI int tcc_set_output_type(TCCState *s, int output_type)
+ #else
+     /* paths for crt objects */
+     tcc_split_path(s, &s->crt_paths, &s->nb_crt_paths, CONFIG_TCC_CRTPREFIX);
+-    if (output_type != TCC_OUTPUT_MEMORY && !s->nostdlib)
++    if (output_type != TCC_OUTPUT_MEMORY && !s->nostdlib && !s->nostartfiles)
+         tccelf_add_crtbegin(s); /* may produce errors */
+ #endif
+     return s->nb_errors ? -1 : 0;
+@@ -1596,6 +1596,7 @@ enum {
+     TCC_OPTION_include,
+     TCC_OPTION_nostdinc,
+     TCC_OPTION_nostdlib,
++    TCC_OPTION_nostartfiles,
+     TCC_OPTION_print_search_dirs,
+     TCC_OPTION_rdynamic,
+     TCC_OPTION_pthread,
+@@ -1683,6 +1684,7 @@ static const TCCOption tcc_options[] = {
+     { "include", TCC_OPTION_include, TCC_OPTION_HAS_ARG },
+     { "nostdinc", TCC_OPTION_nostdinc, 0 },
+     { "nostdlib", TCC_OPTION_nostdlib, 0 },
++    { "nostartfiles", TCC_OPTION_nostartfiles, 0 },
+     { "print-search-dirs", TCC_OPTION_print_search_dirs, 0 },
+     { "w", TCC_OPTION_w, 0 },
+     { "E", TCC_OPTION_E, 0},
+@@ -2038,6 +2040,9 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
+         case TCC_OPTION_nostdlib:
+             s->nostdlib = 1;
+             break;
++        case TCC_OPTION_nostartfiles:
++            s->nostartfiles = 1;
++            break;
+         case TCC_OPTION_run:
+ #ifdef TCC_IS_NATIVE
+             /* When from script "#!/usr/bin/tcc -run <options>",
+diff --git a/tcc.h b/tcc.h
+--- a/tcc.h
++++ b/tcc.h
+@@ -740,6 +740,7 @@ struct TCCState {
+     unsigned char verbose; /* if true, display some information during compilation */
+     unsigned char nostdinc; /* if true, no standard headers are added */
+     unsigned char nostdlib; /* if true, no standard libraries are added */
++    unsigned char nostartfiles; /* if true, crt begin/end objects are not linked */
+     unsigned char nostdlib_paths; /* if true, the default paths are not searched for libraries */
+     unsigned char nocommon; /* if true, do not use common symbols for .bss data */
+     unsigned char static_link; /* if true, static linking is performed */
+diff --git a/tccelf.c b/tccelf.c
+--- a/tccelf.c
++++ b/tccelf.c
+@@ -1868,7 +1868,7 @@ ST_FUNC void tcc_add_runtime(TCCState *s1)
+         if (TCC_LIBTCC1[0])
+             tcc_add_support(s1, TCC_LIBTCC1);
+ #ifndef TCC_TARGET_MACHO
+-        if (s1->output_type != TCC_OUTPUT_MEMORY)
++        if (s1->output_type != TCC_OUTPUT_MEMORY && !s1->nostartfiles)
+             tccelf_add_crtend(s1);
+ #endif
+     }
