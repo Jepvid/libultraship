@@ -1,5 +1,7 @@
 #pragma once
 #include <SDL2/SDL.h>
+
+#include "Fast3dWindow.h"
 #include "ship/window/gui/Gui.h"
 #include "fast/WindowEvent.h"
 #include "fast/resource/type/Texture.h"
@@ -42,6 +44,7 @@ typedef struct {
             uint32_t Height; ///< Framebuffer height in pixels.
         } Gx2;
     };
+    WindowBackend Backend;
 } GuiWindowInitData;
 
 /**
@@ -132,8 +135,6 @@ class Fast3dGui : public Ship::Gui {
      * @param texture Loaded GuiTexture resource.
      */
     void LoadTextureFromResource(const std::string& name, std::shared_ptr<Ship::GuiTexture> texture);
-
-    void RefreshImGuiGamepads() override;
 
   protected:
     void ImGuiWMInit() override;
