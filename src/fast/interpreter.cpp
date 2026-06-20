@@ -26,6 +26,7 @@
 
 #include "fast/interpreter.h"
 #include "fast/lus_gbi.h"
+#include "fast/f3dex3.h"
 #include "fast/backends/gfx_window_manager_api.h"
 #include "fast/backends/gfx_rendering_api.h"
 
@@ -77,6 +78,11 @@ const static uint32_t f3dex2AttrHandler[] = {
     F3DEX2_G_CULL_FRONT,     F3DEX2_G_CULL_BACK, F3DEX2_G_CULL_BOTH,
 };
 
+const static uint32_t f3dex3AttrHandler[] = {
+    F3DEX3_G_MTX_PROJECTION, F3DEX3_G_MTX_LOAD,  F3DEX3_G_MTX_PUSH,  F3DEX3_G_MTX_NOPUSH,
+    F3DEX3_G_CULL_FRONT,     F3DEX3_G_CULL_BACK, F3DEX3_G_CULL_BOTH,
+};
+
 const static uint32_t f3dexAttrHandler[] = { F3DEX_G_MTX_PROJECTION, F3DEX_G_MTX_LOAD,   F3DEX_G_MTX_PUSH,
                                              F3DEX_G_MTX_NOPUSH,     F3DEX_G_CULL_FRONT, F3DEX_G_CULL_BACK,
                                              F3DEX_G_CULL_BOTH };
@@ -88,6 +94,7 @@ static constexpr std::array ucode_attr_handlers = {
     &f3dexAttrHandler,  // ucode_f3exb
     &f3dex2AttrHandler, // ucode_f3ex2
     &f3dex2AttrHandler, // ucode_s2dex
+    &f3dex3AttrHandler, // ucode_f3dex3
 };
 
 static uint32_t get_attr(Attribute attr) {
@@ -2302,6 +2309,46 @@ void Interpreter::GfxSpMovewordF3dex2(uint8_t index, uint16_t offset, uintptr_t 
             if (segIndex == mInterpolationIndex)
                 mSegmentPointers[segNumber] = data;
         } break;
+    }
+}
+
+void Interpreter::GfxSpMovememF3dex3(uint8_t index, uint8_t offset, const void* data) {
+    switch (index) {
+        case F3DEX3_G_MV_VIEWPORT:
+            CalcAndSetViewport((const F3DVp_t*)data);
+            break;
+        case F3DEX3_G_MV_LIGHT: {
+            // F3DEX3: 16-byte slots; slot 0 is lookat, lights start at slot 1 (offset 0x10)
+            int lightidx = (offset / F3DEX3_LIGHT_SLOT_SIZE) - F3DEX3_LIGHT_SLOT_OFFSET;
+            if (lightidx >= 0 && lightidx <= MAX_LIGHTS) {
+                memcpy(mRsp->current_lights + lightidx, data, sizeof(F3DLight));
+            } else if (lightidx < 0) {
+                memcpy(mRsp->lookat, data, sizeof(F3DLight_t));
+            }
+            break;
+        }
+    }
+}
+
+void Interpreter::GfxSpMovewordF3dex3(uint8_t index, uint16_t offset, uintptr_t data) {
+    switch (index) {
+        case F3DEX3_G_MW_NUMLIGHT:
+            // NUML(n) = n * 16; +1 for ambient
+            mRsp->current_num_lights = (uint8_t)(data / F3DEX3_NUML_DIVISOR) + 1;
+            mRsp->lights_changed = true;
+            break;
+        case F3DEX3_G_MW_FOG:
+            mRsp->fog_mul = (int16_t)(data >> 16);
+            mRsp->fog_offset = (int16_t)data;
+            break;
+        case F3DEX3_G_MW_SEGMENT: {
+            int segNumber = offset / 4;
+            mSegmentPointers[segNumber] = data;
+        } break;
+        case F3DEX3_G_MW_FX:
+        case F3DEX3_G_MW_LIGHTCOL:
+        default:
+            break;
     }
 }
 
@@ -4662,6 +4709,152 @@ static constexpr UcodeHandler f3dHandlers = {
     { F3DEX_G_RDPHALF_1, { "mRdpHALF_1", gfx_stubbed_command_handler } },
 };
 
+// ============ F3DEX3 handlers ============
+
+bool gfx_mtx_handler_f3dex3(F3DGfx** cmd0) {
+    Interpreter* gfx = mInstance.lock().get();
+    F3DGfx* cmd = *cmd0;
+    // F3DEX3 inverts both PUSH (bit 0) and LOAD (bit 1)
+    gfx->GfxSpMatrix(C0(0, 8) ^ (uint8_t)F3DEX3_G_MTX_XOR_MASK, (const int32_t*)gfx->SegAddr(cmd->words.w1));
+    return false;
+}
+
+bool gfx_movemem_handler_f3dex3(F3DGfx** cmd0) {
+    Interpreter* gfx = mInstance.lock().get();
+    F3DGfx* cmd = *cmd0;
+    gfx->GfxSpMovememF3dex3(C0(0, 8), C0(8, 8) * 8, gfx->SegAddr(cmd->words.w1));
+    return false;
+}
+
+bool gfx_moveword_handler_f3dex3(F3DGfx** cmd0) {
+    Interpreter* gfx = mInstance.lock().get();
+    F3DGfx* cmd = *cmd0;
+    gfx->GfxSpMovewordF3dex3(C0(16, 8), C0(0, 16), cmd->words.w1);
+    return false;
+}
+
+bool gfx_flush_handler_f3dex3(F3DGfx** cmd0) {
+    Interpreter* gfx = mInstance.lock().get();
+    gfx->Flush();
+    return false;
+}
+
+bool gfx_memset_handler_f3dex3(F3DGfx** cmd0) {
+    return false;
+}
+
+bool gfx_lighttordp_handler_f3dex3(F3DGfx** cmd0) {
+    return false;
+}
+
+bool gfx_relsegment_handler_f3dex3(F3DGfx** cmd0) {
+    return false;
+}
+
+/*
+ * G_TRISNAKE — generalised triangle strip/fan command.
+ *
+ * Encoding:
+ *   w0 = G_TRISNAKE | (i2*2 << 16) | (i1*2 << 8) | (i3*2 | G_SNAKE_LEFT)
+ *   w1 = (i4-byte << 24) | (i5-byte << 16) | (i6-byte << 8) | i7-byte
+ *
+ * Each "processing byte" encodes:
+ *   bit 7  = G_SNAKE_LAST (this is the last triangle)
+ *   bits 6:1 = vertex index
+ *   bit 0  = direction (0 = RIGHT, 1 = LEFT)
+ *
+ * Algorithm: maintain current triangle as indices A, B, C.
+ *   - RIGHT: copy A→B, set A = new index
+ *   - LEFT:  copy A→C, set A = new index
+ *   Draw A-B-C.
+ *
+ * gSPContinueSnake words have 8 processing bytes (both w0 and w1 bytes),
+ * so we consume them by advancing *cmd0.
+ */
+bool gfx_trisnake_handler_f3dex3(F3DGfx** cmd0) {
+    Interpreter* gfx = mInstance.lock().get();
+    F3DGfx* cmd = *cmd0;
+
+    int A = (int)((cmd->words.w0 >> 17) & 0x3F);
+    int B = (int)((cmd->words.w0 >> 9) & 0x3F);
+    int C = 0;
+
+    // First command: 1 byte from w0[7:0], then 4 bytes from w1
+    uint8_t proc_bytes[8];
+    proc_bytes[0] = (uint8_t)(cmd->words.w0 & 0xFF);
+    proc_bytes[1] = (uint8_t)(cmd->words.w1 >> 24);
+    proc_bytes[2] = (uint8_t)(cmd->words.w1 >> 16);
+    proc_bytes[3] = (uint8_t)(cmd->words.w1 >> 8);
+    proc_bytes[4] = (uint8_t)(cmd->words.w1 & 0xFF);
+    int num_bytes = 5;
+
+    bool done = false;
+    while (!done) {
+        for (int i = 0; i < num_bytes && !done; i++) {
+            uint8_t b = proc_bytes[i];
+            bool is_last = (b & 0x80) != 0;
+            int vtx = (b >> 1) & 0x3F;
+            int dir = b & 0x01;
+
+            if (dir == F3DEX3_G_SNAKE_RIGHT) {
+                B = A;
+            } else {
+                C = A;
+            }
+            A = vtx;
+            gfx->GfxSpTri1((uint8_t)A, (uint8_t)B, (uint8_t)C, false);
+
+            if (is_last) {
+                done = true;
+            }
+        }
+
+        if (!done) {
+            // Consume gSPContinueSnake: 8 processing bytes across both words
+            ++(*cmd0);
+            cmd = *cmd0;
+            proc_bytes[0] = (uint8_t)(cmd->words.w0 >> 24);
+            proc_bytes[1] = (uint8_t)(cmd->words.w0 >> 16);
+            proc_bytes[2] = (uint8_t)(cmd->words.w0 >> 8);
+            proc_bytes[3] = (uint8_t)(cmd->words.w0 & 0xFF);
+            proc_bytes[4] = (uint8_t)(cmd->words.w1 >> 24);
+            proc_bytes[5] = (uint8_t)(cmd->words.w1 >> 16);
+            proc_bytes[6] = (uint8_t)(cmd->words.w1 >> 8);
+            proc_bytes[7] = (uint8_t)(cmd->words.w1 & 0xFF);
+            num_bytes = 8;
+        }
+    }
+
+    return false;
+}
+
+static constexpr UcodeHandler f3dex3Handlers = {
+    { F3DEX3_G_NOOP,          { "G_NOOP",          gfx_noop_handler_f3dex2 } },
+    { F3DEX3_G_SPNOOP,        { "G_SPNOOP",        gfx_noop_handler_f3dex2 } },
+    { F3DEX3_G_CULLDL,        { "G_CULLDL",        gfx_cull_dl_handler_f3dex2 } },
+    { F3DEX3_G_MTX,           { "G_MTX",           gfx_mtx_handler_f3dex3 } },
+    { F3DEX3_G_POPMTX,        { "G_POPMTX",        gfx_pop_mtx_handler_f3dex2 } },
+    { F3DEX3_G_MOVEMEM,       { "G_MOVEMEM",       gfx_movemem_handler_f3dex3 } },
+    { F3DEX3_G_MOVEWORD,      { "G_MOVEWORD",      gfx_moveword_handler_f3dex3 } },
+    { F3DEX3_G_TEXTURE,       { "G_TEXTURE",       gfx_texture_handler_f3dex2 } },
+    { F3DEX3_G_VTX,           { "G_VTX",           gfx_vtx_handler_f3dex2 } },
+    { F3DEX3_G_MODIFYVTX,     { "G_MODIFYVTX",     gfx_modify_vtx_handler_f3dex2 } },
+    { F3DEX3_G_DL,            { "G_DL",            gfx_dl_handler_common } },
+    { F3DEX3_G_ENDDL,         { "G_ENDDL",         gfx_end_dl_handler_common } },
+    { F3DEX3_G_GEOMETRYMODE,  { "G_GEOMETRYMODE",  gfx_geometry_mode_handler_f3dex2 } },
+    { F3DEX3_G_TRI1,          { "G_TRI1",          gfx_tri1_handler_f3dex2 } },
+    { F3DEX3_G_TRI2,          { "G_TRI2",          gfx_tri2_handler_f3dex } },
+    { F3DEX3_G_QUAD,          { "G_QUAD",          gfx_quad_handler_f3dex2 } },
+    { F3DEX3_G_TRISNAKE,      { "G_TRISNAKE",      gfx_trisnake_handler_f3dex3 } },
+    { F3DEX3_G_LIGHTTORDP,    { "G_LIGHTTORDP",    gfx_lighttordp_handler_f3dex3 } },
+    { F3DEX3_G_RELSEGMENT,    { "G_RELSEGMENT",    gfx_relsegment_handler_f3dex3 } },
+    { F3DEX3_G_FLUSH,         { "G_FLUSH",         gfx_flush_handler_f3dex3 } },
+    { F3DEX3_G_MEMSET,        { "G_MEMSET",        gfx_memset_handler_f3dex3 } },
+    { F3DEX3_G_SETOTHERMODE_L,{ "G_SETOTHERMODE_L",gfx_othermode_l_handler_f3dex2 } },
+    { F3DEX3_G_SETOTHERMODE_H,{ "G_SETOTHERMODE_H",gfx_othermode_h_handler_f3dex2 } },
+    { F3DEX3_G_RDPHALF_1,     { "G_RDPHALF_1",     gfx_stubbed_command_handler } },
+};
+
 // LUSTODO: These S2DEX commands have different opcode numbers on F3DEX2 vs other ucodes. More research needs to be done
 // to see if the implementations are different.
 static constexpr UcodeHandler s2dexHandlers = {
@@ -4681,6 +4874,7 @@ static constexpr std::array ucode_handlers = {
     &f3dexHandlers,  // ucode_f3dexb
     &f3dex2Handlers, // ucode_f3dex2
     &s2dexHandlers,  // ucode_s2dex
+    &f3dex3Handlers, // ucode_f3dex3
 };
 
 const char* GfxGetOpcodeName(int8_t opcode) {
@@ -4721,6 +4915,7 @@ static void gfx_set_ucode_handler(UcodeHandlers ucode) {
         case ucode_f3dex:
         case ucode_f3dexb:
         case ucode_f3dex2:
+        case ucode_f3dex3:
             gfx->mRsp->fog_mul = 0;
             gfx->mRsp->fog_offset = 0;
             break;

@@ -445,8 +445,10 @@ class Interpreter {
     void GfxSpExtraGeometryMode(uint32_t clear, uint32_t set);
     void GfxSpMovememF3dex2(uint8_t index, uint8_t offset, const void* data);
     void GfxSpMovememF3d(uint8_t index, uint8_t offset, const void* data);
+    void GfxSpMovememF3dex3(uint8_t index, uint8_t offset, const void* data);
     void GfxSpMovewordF3dex2(uint8_t index, uint16_t offset, uintptr_t data);
     void GfxSpMovewordF3d(uint8_t index, uint16_t offset, uintptr_t data);
+    void GfxSpMovewordF3dex3(uint8_t index, uint16_t offset, uintptr_t data);
     void GfxSpTexture(uint16_t sc, uint16_t tc, uint8_t level, uint8_t tile, uint8_t on);
     void GfxDpSetScissor(uint32_t mode, uint32_t ulx, uint32_t uly, uint32_t lrx, uint32_t lry);
     void GfxDpSetTextureImage(uint32_t format, uint32_t size, uint32_t width, const char* texPath, uint32_t texFlags,

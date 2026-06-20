@@ -205,6 +205,15 @@ constexpr int8_t RDP_G_TRI1_WIDE = OPCODE(0x49);
 #define G_LOD 0x00100000
 #define G_LIGHTING_POSITIONAL 0x00400000
 
+/* F3DEX3 geometry mode flags */
+#define G_ATTROFFSET_ST_ENABLE 0x00000080
+#define G_AMBOCCLUSION         0x00000100
+#define G_PACKED_NORMALS       0x00000800
+#define G_LIGHTTOALPHA         0x00001000
+#define G_LIGHTING_SPECULAR    0x00002000
+#define G_FRESNEL_COLOR        0x00004000
+#define G_FRESNEL_ALPHA        0x00008000
+
 /*
  * G_EXTRAGEOMETRY flags: set extra custom geometry modes
  */

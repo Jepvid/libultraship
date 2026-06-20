@@ -3,6 +3,7 @@
 #include "spdlog/spdlog.h"
 #include "libultraship/libultra/gbi.h"
 #include "fast/lus_gbi.h"
+#include "fast/f3dex3.h"
 #include <tinyxml2.h>
 
 namespace Fast {
@@ -157,7 +158,8 @@ int8_t GetEndOpcodeByUCode(UcodeHandlers ucode) {
         case ucode_f3dexb:
             return F3DEX_G_ENDDL;
         case ucode_f3dex2:
-        case ucode_s2dex: {
+        case ucode_s2dex:
+        case ucode_f3dex3: {
             return F3DEX2_G_ENDDL;
         }
         case ucode_max:
@@ -1163,6 +1165,53 @@ ResourceFactoryXMLDisplayListV0::ReadResource(std::shared_ptr<Ship::File> file,
             GsSPPushShader(dl->Instructions, shader);
         } else if (childName == "PopShader") {
             GsSPPopShader(dl->Instructions);
+        // F3DEX3-specific G_MOVEWORD commands (G_MW_FX = 0x00)
+        } else if (childName == "AmbOcclusion") {
+            // Two words: AmbDir then Point
+            Gfx g2[2] = {
+                gsMoveWd(F3DEX3_G_MW_FX, F3DEX3_G_MWO_AO_AMBIENT,
+                         (_SHIFTL(child->IntAttribute("Amb"), 16, 16) | _SHIFTL(child->IntAttribute("Dir"), 0, 16))),
+                F3DEX3_gsMoveHalfwd(F3DEX3_G_MW_FX, F3DEX3_G_MWO_AO_POINT, child->IntAttribute("Point")),
+            };
+            for (int j = 0; j < 2; j++) { dl->Instructions.push_back(g2[j]); }
+            child = child->NextSiblingElement(); continue;
+        } else if (childName == "AmbOcclusionAmb") {
+            g = F3DEX3_gsMoveHalfwd(F3DEX3_G_MW_FX, F3DEX3_G_MWO_AO_AMBIENT, child->IntAttribute("Value"));
+        } else if (childName == "AmbOcclusionDir") {
+            g = F3DEX3_gsMoveHalfwd(F3DEX3_G_MW_FX, F3DEX3_G_MWO_AO_DIRECTIONAL, child->IntAttribute("Value"));
+        } else if (childName == "AmbOcclusionPoint") {
+            g = F3DEX3_gsMoveHalfwd(F3DEX3_G_MW_FX, F3DEX3_G_MWO_AO_POINT, child->IntAttribute("Value"));
+        } else if (childName == "AmbOcclusionAmbDir") {
+            g = gsMoveWd(F3DEX3_G_MW_FX, F3DEX3_G_MWO_AO_AMBIENT,
+                         _SHIFTL(child->IntAttribute("Amb"), 16, 16) | _SHIFTL(child->IntAttribute("Dir"), 0, 16));
+        } else if (childName == "AmbOcclusionDirPoint") {
+            g = gsMoveWd(F3DEX3_G_MW_FX, F3DEX3_G_MWO_AO_DIRECTIONAL,
+                         _SHIFTL(child->IntAttribute("Dir"), 16, 16) | _SHIFTL(child->IntAttribute("Point"), 0, 16));
+        } else if (childName == "Fresnel") {
+            g = gsMoveWd(F3DEX3_G_MW_FX, F3DEX3_G_MWO_FRESNEL_SCALE,
+                         _SHIFTL(child->IntAttribute("Scale"), 16, 16) | _SHIFTL(child->IntAttribute("Offset"), 0, 16));
+        } else if (childName == "FresnelScale") {
+            g = F3DEX3_gsMoveHalfwd(F3DEX3_G_MW_FX, F3DEX3_G_MWO_FRESNEL_SCALE, child->IntAttribute("Value"));
+        } else if (childName == "FresnelOffset") {
+            g = F3DEX3_gsMoveHalfwd(F3DEX3_G_MW_FX, F3DEX3_G_MWO_FRESNEL_OFFSET, child->IntAttribute("Value"));
+        } else if (childName == "AttrOffsetST") {
+            g = gsMoveWd(F3DEX3_G_MW_FX, F3DEX3_G_MWO_ATTR_OFFSET_S,
+                         _SHIFTL(child->IntAttribute("S"), 16, 16) | _SHIFTL(child->IntAttribute("T"), 0, 16));
+        } else if (childName == "AttrOffsetZ") {
+            g = gsMoveWd(F3DEX3_G_MW_FX, F3DEX3_G_MWO_ATTR_OFFSET_Z, _SHIFTL(child->IntAttribute("Z"), 16, 16));
+        } else if (childName == "AlphaCompareCull") {
+            std::string modeStr = child->Attribute("Mode") ? child->Attribute("Mode") : "";
+            int8_t modeVal = (modeStr == "G_ALPHA_COMPARE_CULL_BELOW")  ? F3DEX3_G_ALPHA_COMPARE_CULL_BELOW
+                           : (modeStr == "G_ALPHA_COMPARE_CULL_ABOVE")  ? F3DEX3_G_ALPHA_COMPARE_CULL_ABOVE
+                                                                         : F3DEX3_G_ALPHA_COMPARE_CULL_DISABLE;
+            g = F3DEX3_gsMoveHalfwd(F3DEX3_G_MW_FX, F3DEX3_G_MWO_ALPHA_COMPARE_CULL,
+                                    (_SHIFTL(modeVal, 8, 8) | _SHIFTL(child->IntAttribute("Thresh"), 0, 8)));
+        } else if (childName == "NormalsMode") {
+            std::string modeStr = child->Attribute("Mode") ? child->Attribute("Mode") : "";
+            uint8_t modeVal = (modeStr == "G_NORMALS_MODE_AUTO")   ? F3DEX3_G_NORMALS_MODE_AUTO
+                            : (modeStr == "G_NORMALS_MODE_MANUAL") ? F3DEX3_G_NORMALS_MODE_MANUAL
+                                                                   : F3DEX3_G_NORMALS_MODE_FAST;
+            g = F3DEX3_gsMoveHalfwd(F3DEX3_G_MW_FX, F3DEX3_G_MWO_NORMALS_MODE, modeVal);
         } else {
             printf("DisplayListXML: Unknown node %s\n", childName.c_str());
             g = gsDPPipeSync();
@@ -1173,13 +1222,21 @@ ResourceFactoryXMLDisplayListV0::ReadResource(std::shared_ptr<Ship::File> file,
         child = child->NextSiblingElement();
     }
 
+    // Check for an explicit Microcode attribute on the root <DisplayList> element.
+    // Falls back to the compile-time default when absent (vanilla SOH behaviour).
+    auto root = std::get<std::shared_ptr<tinyxml2::XMLDocument>>(file->Reader)->FirstChildElement();
+    const char* microcodeAttr = root ? root->Attribute("Microcode") : nullptr;
+    if (microcodeAttr && std::string(microcodeAttr) == "F3DEX3") {
+        dl->UCode = ucode_f3dex3;
+    } else {
 #ifdef F3DEX_GBI_2
-    dl->UCode = ucode_f3dex2;
+        dl->UCode = ucode_f3dex2;
 #elif defined(F3DEX_GBI)
-    dl->UCode = ucode_f3dex;
+        dl->UCode = ucode_f3dex;
 #elif defined(F3D_OLD)
-    dl->UCode = ucode_f3d;
+        dl->UCode = ucode_f3d;
 #endif
+    }
 
     return dl;
 }
